@@ -1,109 +1,88 @@
-# Oh My Pi Docker Build System
+# Container My Pi Docker
 
-[![Build Status](https://img.shields.io/badge/Build-passing-brightgreen)](LINK_TO_CI)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.0.0-blue.svg)](CHANGELOG.md)
+A modular, multi‑variant Docker build system for [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) — a terminal‑native AI coding agent.
 
-## ✨ Overview
+## 🌟 System Overview
 
-## 🧩 Core Components
-The OMP project is structured around three core files that define and execute the container build system:
+Container My Pi Docker delivers a **reproducible, minimal, and secure** foundation for development, CI, and home‑lab use. This architecture is driven by a modular approach:
 
-*   `Dockerfile`: Defines the low-level multi-stage Docker build process. It specifies the base images, the builder stage for installing dependencies, and the minimal runtime stage for execution.
-*   `build_config.yaml`: Acts as the single source of truth for image variants. It defines the purpose, tags, and required tools for every specialized image (e.g., `standard`, `kubectl-tools`).
-*   `build.sh`: The orchestration script. It reads `build_config.yaml`, iterates over all defined variants, and executes the necessary Docker builds according to the configuration.
+*   **`Dockerfile`**: Defines the multi-stage build logic (builder and runtime) to ensure minimal image size.
+*   **`build_config.yaml`**: The single source of truth, defining all image variants, their required tools, and tags.
+*   **`build.sh`**: The orchestration script that reads `build_config.yaml`, computes the build matrix, and executes the Docker builds.
 
-[Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) is a **terminal‑native AI coding agent** built for fast, precise, and reliable development workflows. Unlike simple chat wrappers, OMP provides a complete agent runtime with:
+### System Design Principles
+Our design focuses on reliability and security:
+*   **Minimal Overhead**: Final runtime images contain only the strictly required artifacts.
+*   **Security**: Utilizes two‑stage builds and runs containers as a non‑root `pi` user to reduce the attack surface.
+*   **Flexibility**: Supports easy addition of variants for specialized toolchains (`kubectl`, `dotnet`, etc.).
 
-- **[Hash‑anchored edits](ca://s?q=Explain_hash_anchored_edits)** for exact, low‑token code manipulation  
-- **[Multi‑provider LLM support](ca://s?q=Explain_multi_model_support_in_OMP)** through a unified streaming interface  
-- **A powerful tool harness** (file ops, shell execution, LSP, Python, browser automation, sub‑agents)  
-- **Session persistence** with branching, compaction, and long‑running context management  
-- **Extensibility** via custom tools, slash commands, and MCP servers  
+### Architecture Flow
+The process follows this path:
+`build_config.yaml` (variants) $\rightarrow$ `build.sh` (orchestration) $\rightarrow$ `Dockerfile` (multi-stage) $\rightarrow$ Image artifacts
 
-This repository adds a **flexible, multi‑variant Docker build system** that produces minimal, specialized container images tailored to specific operational needs. Each variant is purpose‑built, ensuring:
-
-- **Minimal overhead**  
-- **Maximum security**  
-- **Only the required tools included** (e.g., `kubectl`, `helm`, `dotnet-sdk`)  
-- **Reproducible builds** suitable for home‑lab, CI, and development environments  
-
-Together, OMP’s advanced agent capabilities and this modular container architecture create a **high‑performance, customizable AI‑powered development environment** that integrates cleanly into modern workflows.
-
----
-
-## 💡 Key Features
-
-Beyond the dynamic image build system, OMP includes a powerful **AI‑powered Commit Tool** that elevates repository hygiene and commit quality:
-
-- **Intelligent Change Analysis**: Uses specialized git inspection tools (`git-overview`, `git-file-diff`, `git-hunk`) to deeply understand change context.  
-- **[Atomic Committing](ca://s?q=Explain_atomic_commits)**: Automatically splits unrelated changes into isolated commits with correct dependency ordering.  
-- **Fine‑Grained Staging**: Supports staging individual hunks when changes span multiple logical concerns.  
-- **Changelog Automation**: Generates structured entries for `CHANGELOG.md`.  
-- **Commit Validation**: Enforces conventional commit format and flags filler/meta‑phrases.  
-- **Usage**: Run via `omp commit` with options such as `--push` or `--dry-run`.
-
----
-
-## 🏗️ Build System Architecture
-
-This repository employs a highly modular, multi-variant Docker build system designed for high reliability and security. The system is orchestrated through three key components:
-
-*   `Dockerfile`: Defines the multi-stage build logic (builder and runtime), specifying how dependencies are installed and how the final, minimal image is constructed.
-*   `build_config.yaml`: Functions as the single source of truth, defining all available image variants, their required tools, and associated tags.
-*   `build.sh`: The orchestration script that reads `build_config.yaml`, dynamically determines the build matrix, and executes the Docker build process against the logic in `Dockerfile`.
-
-```ascii
-[ build_config.yaml (Variants) ]
-       |
-       v
-[ build.sh (Orchestration) ] ---> [ Dockerfile (Multi-Stage Logic) ]
-       |                 |
-       +-----> [ Image Artifacts (e.g., standard, dotnet-dev) ]
-```
-
-### ⚙️ Two-Stage Build Process
-
-1. **Builder Stage (`builder`)**: This initial stage installs all necessary system dependencies, including `bash`, `curl`, `jq`, `git`, and the `bun` package manager. It also installs the core Oh My Pi Agent (`@oh-my-pi/pi-coding-agent`) within the non-root `pi` user.
-2. **Runtime Stage (`runtime`)**: This final, minimal stage is designed for execution. It starts from the same `fedora:44` base image but only copies essential artifacts (like the Bun installation) from the builder stage. This ensures the final image contains *only* the runtime environment and necessary tools, dramatically reducing attack surface and image size.
-
-### 🛠️ Variant Configuration (`build_config.yaml`)
-
-The `build_config.yaml` file serves as the **single source of truth** for all image variants. Each variant defines a specific purpose, an image `tag`, and a list of required tool installations.
-
-Examples of available variants include:
-
-* **`standard`**: The core environment, including essential utilities for general development.
-* **`kubectl-tools`**: Includes specialized Kubernetes utilities (e.g., `kubectl`) for cluster management.
-* **`dotnet-dev`**: Includes the full .NET SDK for development tasks.
-
-The build script dynamically reads this file to determine which tools and commands need to be executed for each variant.
----
-
-## 🚀 Usage and Execution Flow
-
-The entire build process is orchestrated by the `build.sh` script, which manages the building of specific, named image variants based on configuration.
-
-### Step-by-Step Execution
-
-1. **Check Dependencies**: `build.sh` verifies necessary dependencies (`yq`, `docker`).
-2. **Variant Discovery**: The script uses `yq` to parse `build_config.yaml` and extract all defined variants.
-3. **Build Loop**: It iterates through the configured variants and executes the Docker build command for each one, applying the specific tool installation commands defined for that variant.
-4. **Image Output**: Upon completion, images are named using the convention:
-
-`oh-my-pi-<variant-name>:<tag>`
+## 🚀 Quickstart
 
 ### Prerequisites
 
-Ensure the following are installed:
+*   Docker installed and running.
+*   Bash available to run the build script.
+*   `yq` recommended for local variant inspection (the build script checks for it).
 
-* **Docker** — container runtime
-* **Bash** — execution environment for the build script
+### Building Variants
 
-### Building a image
-
-To build a specific image variant, run:
-
+**Build a single variant:**
 ```bash
-./build.sh <variant_name>
+# Build the 'standard' variant
+./build.sh standard
 ```
+
+### Image Naming Convention
+
+The standard image naming format is:
+```
+oh-my-pi-<variant-name>:<tag>
+```
+
+## ⚙️ Configuration and Variants
+
+`build_config.yaml` is the single source of truth for all image configurations. Each variant entry must define:
+
+*   **`name`**: Variant identifier used by `build.sh`.
+*   **`tag`**: Image tag.
+*   **`tools`**: List of tools or install steps required for that variant.
+*   **`description`**: Short, human-readable purpose.
+
+### Recommended Variant Table
+
+| Variant | Tag | Purpose |
+| :--- | :--- | :--- |
+| `standard` | `latest` | Core environment with essential utilities |
+| `kubectl-tools` | `k8s` | Kubernetes CLI and cluster management tools |
+| `dotnet-dev` | `dotnet` | Full .NET SDK for development |
+
+### Best Practices
+*   Keep each variant focused and minimal.
+*   Prefer scripted, idempotent install steps.
+*   Pin versions for deterministic builds.
+*   Use build args and labels for metadata (e.g., `org.opencontainers.image.revision`).
+
+## 🤝 Contributing and Governance
+
+### How to Contribute
+*   Open an issue for feature requests or bugs.
+*   Submit pull requests with a clear description and tests where applicable.
+*   Follow conventional commits for changelog automation.
+
+### Repository Layout
+*   **`Dockerfile`**: Multi‑stage build.
+*   **`build_config.yaml`**: Variant definitions.
+*   **`build.sh`**: Orchestration script.
+*   **`CHANGELOG.md`**: Release notes.
+*   **`LICENSE`**: MIT license.
+
+### Code of Conduct
+Be respectful and constructive. Follow the repository’s code of conduct.
+
+## License
+
+MIT License — see the `LICENSE` file for details.
