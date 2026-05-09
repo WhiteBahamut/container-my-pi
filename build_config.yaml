@@ -12,4 +12,4 @@ variants:
         mv ./kubectl /usr/local/bin/kubectl
   - name: dotnet-dev
     tag: dotnet
-    command: "RUN dnf install -y bash curl jq yq openssl git tar dotnet-sdk-10 && dnf clean all"
+    command: "RUN dnf install -y bash curl jq yq openssl git tar dotnet-sdk-10.0 && dnf clean all"
