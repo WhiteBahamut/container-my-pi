@@ -1,168 +1,212 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # ====================================================
 # Oh My Pi Docker Build Script
-#
-# PURPOSE:
+# ====================================================
+# Purpose:
 #   Deterministically build container images for each
 #   variant defined in build_config.yaml. For every
 #   variant, two images are produced:
 #     - Standard image
 #     - TTYD-enabled image
 #
-#   The script optionally accepts a container registry
-#   prefix. If provided, all emitted image tags are
-#   prefixed with "<registry>/...".
+# Key behavior:
+#   - build_config.yaml uses a `steps` list per variant.
+#   - Each steps[] item becomes one Dockerfile line:
+#       RUN <step content as in YAML>
+#     injected verbatim (no modification).
+#   - Multi-line steps are preserved exactly as written in YAML.
+#   - The script does NOT read or substitute any base image.
+#     Dockerfile templates must include their own FROM line.
+#   - Variant `name` is used as the image tag (no separate tag field).
 #
-#   Example:
-#       ./build.sh standard
-#       ./build.sh standard ghcr.io/wayne/oh-my-pi
+# Required files:
+#   - build_config.yaml
+#     (variants: list of objects with `name` and `steps`)
+#   - Dockerfile (template) containing the placeholder:
+#       {{ template for variant goes here }}
+#     and a FROM line (script will not inject FROM).
+#   - Dockerfile.ttyd (template) containing the same placeholder
 #
-# CI CONTRACT:
-# ----------------------------------------------------
-# GitHub Actions parses the output of this script to
-# determine which images must be pushed. The following
-# block MUST remain byte-for-byte identical:
+# Dependencies:
+#   - docker
+#   - yq (v4+ recommended)
+#   - jq
+#   - base64 (GNU or BSD compatible)
 #
-#   === IMAGE_LIST_BEGIN ===
-#   <image1>
-#   <image2>
-#   ...
-#   === IMAGE_LIST_END ===
+# Usage:
+#   ./build.sh <variant-name> [registry]
 #
-# DO NOT MODIFY THESE MARKERS.
+# Output:
+#   The script prints a CI-parsable image list block:
+#     === IMAGE_LIST_BEGIN ===
+#     <image1>
+#     <image2>
+#     === IMAGE_LIST_END ===
+#
+# Notes:
+#   - The script preserves step content exactly. If you want
+#     shell flags (e.g., set -eux) or continuations (&& \),
+#     include them in the YAML step content.
+#   - To inspect generated temporary Dockerfiles for debugging,
+#     temporarily comment out the `rm -f "$temp"` line in
+#     build_variant() to keep the file.
 # ====================================================
 
 CONFIG_FILE="./build_config.yaml"
 DOCKERFILE="./Dockerfile"
 TTYD_DOCKERFILE="./Dockerfile.ttyd"
-COMMIT_HASH="$(git rev-parse --short HEAD)"
+COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-# Array collecting all built image tags for CI output
 BUILT_IMAGES=()
 
 # ----------------------------------------------------
 # Dependency check
-# Ensures required tools exist before continuing.
 # ----------------------------------------------------
 check_deps() {
-    for dep in docker yq; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            echo "ERROR: Missing dependency: $dep" >&2
-            exit 1
-        fi
-    done
+  for dep in docker yq jq base64; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      echo "ERROR: Missing dependency: $dep" >&2
+      exit 1
+    fi
+  done
 }
 
 # ----------------------------------------------------
-# Helper: read a field from a variant in build_config.yaml
-# This isolates YAML parsing and avoids duplication.
+# Read a scalar field from a variant (name, etc.)
 # ----------------------------------------------------
 get_variant_field() {
-    local variant="$1"
-    local field="$2"
-    yq -r ".variants[] | select(.name == \"$variant\") | .$field" "$CONFIG_FILE"
+  local variant="$1"
+  local field="$2"
+  yq -r ".variants[] | select(.name == \"${variant}\") | .${field} // \"\"" "$CONFIG_FILE"
+}
+
+# ----------------------------------------------------
+# Read steps array for a variant as JSON
+# ----------------------------------------------------
+get_variant_steps_json() {
+  local variant="$1"
+  # returns JSON array (possibly empty)
+  yq -o=json ".variants[] | select(.name == \"${variant}\") | .steps // []" "$CONFIG_FILE"
+}
+
+# ----------------------------------------------------
+# Convert steps JSON -> verbatim RUN blocks
+# Each array element becomes one "RUN <step content>" block.
+# We base64-encode JSON elements in jq and decode in bash to
+# preserve newlines and exact content without jq/bourne quoting issues.
+# ----------------------------------------------------
+steps_json_to_run_block() {
+  # stdin: JSON array of steps
+  # output: block of text with each step prefixed by "RUN " and preserved verbatim
+  jq -r 'map(@base64) | .[]' | while IFS= read -r b64; do
+    # Try GNU base64 decode first, fallback to BSD (-D)
+    if ! step="$(printf '%s' "$b64" | base64 --decode 2>/dev/null)"; then
+      step="$(printf '%s' "$b64" | base64 -D 2>/dev/null || true)"
+    fi
+
+    # If decoding failed, skip
+    if [ -z "${step+x}" ]; then
+      continue
+    fi
+
+    # Emit RUN followed by the step content exactly as in YAML.
+    # If the step contains multiple lines, the first line will be on the same line as RUN,
+    # and subsequent lines will follow unchanged.
+    printf 'RUN %s\n\n' "$step"
+  done
 }
 
 # ----------------------------------------------------
 # Build a single image (standard or ttyd)
-#
-# Steps:
-#   1. Create a temporary Dockerfile with injected
-#      variant-specific commands.
-#   2. Build the image with docker build.
-#   3. Append the resulting tag to BUILT_IMAGES.
-#
-# AWK is used for safe multiline template injection.
 # ----------------------------------------------------
 build_variant() {
-    local variant="$1"
-    local dockerfile="$2"
-    local tag="$3"
-    local command="$4"
+  local variant="$1"
+  local dockerfile_template="$2"
+  local tag="$3"
+  local steps_json="$4"
+  local temp="/tmp/Dockerfile.${variant}.$$"
 
-    local temp="/tmp/Dockerfile.${variant}.$$"
+  # Generate injected block (verbatim RUN <step content> per steps item)
+  injected_block="$(printf '%s' "$steps_json" | steps_json_to_run_block)"
 
-    # Inject variant commands into the Dockerfile template
-    awk -v block="$command" '
-        /{{ template for variant goes here }}/ {
-            print block
-            next
-        }
-        { print }
-    ' "$dockerfile" > "$temp"
+  # Inject into template at the placeholder line
+  awk -v block="$injected_block" '
+    /{{ template for variant goes here }}/ {
+      print block
+      next
+    }
+    { print }
+  ' "$dockerfile_template" > "$temp"
 
-    echo "-> Building: $tag"
-    docker build --pull -t "$tag" -f "$temp" .
+  echo "-> Building: $tag"
+  docker build --pull -t "$tag" -f "$temp" .
 
-    BUILT_IMAGES+=("$tag")
+  BUILT_IMAGES+=("$tag")
 
-    rm -f "$temp"
+  rm -f "$temp"
 }
 
 # ----------------------------------------------------
-# Main entry point
-#
-# Arguments:
-#   $1 = variant name (required)
-#   $2 = registry prefix (optional)
-#
-# Behavior:
-#   - Validates variant exists in YAML.
-#   - Builds standard + ttyd images.
-#   - Emits CI machine-readable image list.
+# Main
 # ----------------------------------------------------
 main() {
-    check_deps
+  check_deps
 
-    if [ -z "${1:-}" ]; then
-        echo "Usage: $0 <variant> [registry]" >&2
-        exit 1
-    fi
+  if [ -z "${1:-}" ]; then
+    echo "Usage: $0 <variant-name> [registry]" >&2
+    exit 1
+  fi
 
-    VARIANT="$1"
-    REGISTRY="${2:-}"
+  VARIANT="$1"
+  REGISTRY="${2:-}"
 
-    COMMAND=$(get_variant_field "$VARIANT" "command")
-    TAG=$(get_variant_field "$VARIANT" "tag")
+  # Use variant name as tag (no separate tag field)
+  TAG="${VARIANT}"
 
-    # Validate variant definition
-    if [ -z "$COMMAND" ] || [ -z "$TAG" ] || [ "$COMMAND" = "null" ] || [ "$TAG" = "null" ]; then
-        echo "ERROR: Variant '$VARIANT' not found in $CONFIG_FILE" >&2
-        exit 1
-    fi
+  STEPS_JSON="$(get_variant_steps_json "$VARIANT")"
 
-    echo "=== Building variant: $VARIANT ==="
-    echo "Command: $COMMAND"
-    echo "Tag: $TAG"
+  if [ -z "$STEPS_JSON" ] || [ "$STEPS_JSON" = "null" ]; then
+    echo "ERROR: Variant '$VARIANT' not found or missing steps in $CONFIG_FILE" >&2
+    exit 1
+  fi
 
-    # Optional registry prefix
-    if [ -n "$REGISTRY" ]; then
-        PREFIX="${REGISTRY}/"
-    else
-        PREFIX=""
-    fi
+  echo "=== Building variant: $VARIANT ==="
+  echo "Tag: $TAG"
 
-    # Construct deterministic tags
-    STD_TAG="${PREFIX}container-my-pi-${TAG}:${COMMIT_HASH}"
-    TTYD_TAG="${PREFIX}container-my-pi-${TAG}-ttyd:${COMMIT_HASH}"
+  if [ -n "$REGISTRY" ]; then
+    PREFIX="${REGISTRY}/"
+  else
+    PREFIX=""
+  fi
 
-    # Build both images
-    build_variant "$VARIANT" "$DOCKERFILE" "$STD_TAG" "$COMMAND"
-    build_variant "$VARIANT" "$TTYD_DOCKERFILE" "$TTYD_TAG" "$COMMAND"
+  STD_TAG="${PREFIX}container-my-pi-${TAG}:${COMMIT_HASH}"
+  TTYD_TAG="${PREFIX}container-my-pi-${TAG}-ttyd:${COMMIT_HASH}"
 
-    echo "=== Build complete for $VARIANT ==="
+  tmp_std_template="/tmp/Dockerfile.template.std.$$"
+  tmp_ttyd_template="/tmp/Dockerfile.template.ttyd.$$"
 
-    # ------------------------------------------------
-    # CI-CRITICAL MACHINE-READABLE OUTPUT
-    # DO NOT MODIFY THIS FORMAT.
-    # ------------------------------------------------
-    echo "=== IMAGE_LIST_BEGIN ==="
-    for img in "${BUILT_IMAGES[@]}"; do
-        echo "$img"
-    done
-    echo "=== IMAGE_LIST_END ==="
+  # Do not substitute any base image; templates must include FROM line themselves
+  cp "$DOCKERFILE" "$tmp_std_template"
+  cp "$TTYD_DOCKERFILE" "$tmp_ttyd_template"
+
+  build_variant "$VARIANT" "$tmp_std_template" "$STD_TAG" "$STEPS_JSON"
+  build_variant "$VARIANT" "$tmp_ttyd_template" "$TTYD_TAG" "$STEPS_JSON"
+
+  rm -f "$tmp_std_template" "$tmp_ttyd_template"
+
+  echo "=== Build complete for $VARIANT ==="
+
+  # ------------------------------------------------
+  # CI-CRITICAL MACHINE-READABLE OUTPUT
+  # DO NOT MODIFY THIS FORMAT.
+  # ------------------------------------------------
+  echo "=== IMAGE_LIST_BEGIN ==="
+  for img in "${BUILT_IMAGES[@]}"; do
+    echo "$img"
+  done
+  echo "=== IMAGE_LIST_END ==="
 }
 
 main "$@"
