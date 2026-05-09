@@ -85,4 +85,4 @@ Be respectful and constructive. Follow the repository’s code of conduct.
 
 ## License
 
-MIT License — see the `LICENSE` file for details.
+MIT. See [LICENSE](LICENSE).
