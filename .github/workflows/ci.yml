@@ -1,29 +1,55 @@
 name: CI/CD Pipeline
 
+# ------------------------------------------------------------
+# TRIGGERS
+# ------------------------------------------------------------
+# Run CI on:
+#   - pushes to main or develop
+#   - pull requests targeting main
+# This ensures all variants are built and validated before merge.
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
+# ------------------------------------------------------------
+# PERMISSIONS
+# ------------------------------------------------------------
+# packages: write → required to push images to GHCR
+# contents: read → required for checkout
 permissions:
   contents: read
   packages: write
 
+# ------------------------------------------------------------
+# CONCURRENCY CONTROL
+# ------------------------------------------------------------
+# Ensures only one workflow per branch runs at a time.
+# If a new push arrives, the previous run is cancelled.
 concurrency:
   group: ci-cd-pipeline-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+
+  # ============================================================
+  # JOB 1 — PREPARE MATRIX
+  # ============================================================
+  # Reads build_config.yaml and extracts the list of variants.
+  # This job produces a JSON array used as the matrix for builds.
   prepare:
     name: Prepare matrix
     runs-on: ubuntu-latest
+
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Install jq + yq for YAML/JSON processing
       - name: Install yq and jq
         run: |
           set -euo pipefail
@@ -31,29 +57,46 @@ jobs:
           sudo apt-get install -y jq
           pip3 install yq
 
+      # Extract variant names from build_config.yaml
       - name: Extract variant list
         id: set-matrix
         run: |
           set -euo pipefail
+
+          # Read .variants[].name → ["standard","kubectl-tools",...]
           VARIANTS=$(yq -r '.variants[].name' build_config.yaml | jq -R . | jq -s .)
+
+          # Fail early if no variants exist
           if [ "$(printf '%s' "$VARIANTS" | jq length)" -eq 0 ]; then
             echo "No variants found in build_config.yaml" >&2
             exit 1
           fi
+
+          # Emit matrix JSON for downstream job
           echo "matrix=$VARIANTS" >> $GITHUB_OUTPUT
 
+  # ============================================================
+  # JOB 2 — BUILD AND PUSH IMAGES
+  # ============================================================
+  # Builds each variant in parallel using the matrix produced
+  # by the prepare job. The authoritative build.sh script is
+  # executed, and its IMAGE_LIST_BEGIN/END block is parsed to
+  # determine which images must be pushed.
   build-and-push:
     name: Build and push images
     needs: prepare
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
         variant: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: 4
+      max-parallel: 4   # Avoids overloading the runner
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Install jq + yq again (each job runs in a fresh VM)
       - name: Install jq and yq
         run: |
           set -euo pipefail
@@ -61,12 +104,15 @@ jobs:
           sudo apt-get install -y jq
           pip3 install yq
 
+      # Enable multi-arch support (QEMU)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      # Enable Buildx (required for modern Docker builds)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Authenticate to GitHub Container Registry (GHCR)
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -74,19 +120,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # --------------------------------------------------------
+      # Run build.sh for the current variant.
+      # build.sh MUST emit IMAGE_LIST_BEGIN/END markers.
+      # --------------------------------------------------------
       - name: Run build.sh and capture image list
         id: build
         run: |
           set -euo pipefail
+
           echo "Running build.sh for variant: ${{ matrix.variant }}"
-          # Run the authoritative build script; it must emit IMAGE_LIST_BEGIN/IMAGE_LIST_END block
-          OUTPUT=$(./build.sh "${{ matrix.variant }}" 2>&1) || { echo "$OUTPUT"; exit 1; }
+
+          # Run authoritative build script
+          OUTPUT=$(./build.sh "${{ matrix.variant }}" "ghcr.io/whitebahamut" 2>&1) || {
+            echo "$OUTPUT"
+            exit 1
+          }
+
           echo "$OUTPUT"
 
-          # Extract the lines between IMAGE_LIST_BEGIN and IMAGE_LIST_END (exclusive)
-          IMAGES=$(printf '%s\n' "$OUTPUT" | sed -n '/IMAGE_LIST_BEGIN/,/IMAGE_LIST_END/p' | sed '1d;$d' || true)
+          # Extract lines between IMAGE_LIST_BEGIN and IMAGE_LIST_END
+          IMAGES=$(printf '%s\n' "$OUTPUT" \
+            | sed -n '/IMAGE_LIST_BEGIN/,/IMAGE_LIST_END/p' \
+            | sed '1d;$d' || true)
 
-          # If no images were emitted, fail to avoid silent success
+          # Fail if no images were emitted
           if [ -z "$(printf '%s' "$IMAGES" | tr -d '[:space:]')" ]; then
             echo "No images emitted by build.sh for variant ${{ matrix.variant }}" >&2
             exit 1
@@ -96,19 +154,27 @@ jobs:
           JSON=$(printf '%s\n' "$IMAGES" | jq -R . | jq -s .)
           echo "images=$JSON" >> $GITHUB_OUTPUT
 
+      # --------------------------------------------------------
+      # Push all built images to GHCR
+      # --------------------------------------------------------
       - name: Push images to GHCR
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          echo "Images JSON: ${ { steps.build.outputs.images } }"
-          # Use safe expansion to preserve JSON formatting
+
+          echo "Images JSON: ${{ steps.build.outputs.images }}"
+
+          # Iterate through each image emitted by build.sh
           echo "${{ steps.build.outputs.images }}" | jq -r '.[]' | while read -r IMG; do
-            # Detect fully qualified registry host: presence of '.' or ':' before first '/'
+
+            # Detect fully-qualified registry prefix
+            # e.g., ghcr.io/owner/image:tag
             if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
               echo "Pushing fully qualified image: $IMG"
               docker push "$IMG"
             else
+              # If not fully qualified, tag it under GHCR
               TARGET="ghcr.io/${GITHUB_REPOSITORY}/${IMG}"
               echo "Tagging $IMG -> $TARGET"
               docker tag "$IMG" "$TARGET"
@@ -117,19 +183,23 @@ jobs:
             fi
           done
 
-      - name: Optional: Verify pushed images (manifest inspect)
+      # --------------------------------------------------------
+      # OPTIONAL: Verify manifests exist for pushed images
+      # --------------------------------------------------------
+      - name: Verify manifests (non-blocking)
         if: always()
         run: |
           set -euo pipefail
-          # This step is optional and lightweight; it attempts to inspect the manifest for each pushed image.
-          # It will not fail the job by default; change behavior if you want strict verification.
+
           echo "${{ steps.build.outputs.images }}" | jq -r '.[]' | while read -r IMG; do
             if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
               TARGET="$IMG"
             else
               TARGET="ghcr.io/${{ github.repository }}/$IMG"
             fi
+
             echo "Inspecting manifest for $TARGET"
+
             if docker manifest inspect "$TARGET" > /dev/null 2>&1; then
               echo "Manifest exists for $TARGET"
             else

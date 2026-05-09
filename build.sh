@@ -4,16 +4,26 @@ set -euo pipefail
 # ====================================================
 # Oh My Pi Docker Build Script
 #
-# This script builds two images per variant:
-#   - Standard image
-#   - TTYD-enabled image
+# PURPOSE:
+#   Deterministically build container images for each
+#   variant defined in build_config.yaml. For every
+#   variant, two images are produced:
+#     - Standard image
+#     - TTYD-enabled image
 #
-# IMPORTANT — CI CONTRACT:
+#   The script optionally accepts a container registry
+#   prefix. If provided, all emitted image tags are
+#   prefixed with "<registry>/...".
+#
+#   Example:
+#       ./build.sh standard
+#       ./build.sh standard ghcr.io/wayne/oh-my-pi
+#
+# CI CONTRACT:
 # ----------------------------------------------------
-# The GitHub Actions workflow (ci.yml) *parses the output*
-# of this script to extract the list of built images.
-#
-# The following block MUST remain exactly as-is:
+# GitHub Actions parses the output of this script to
+# determine which images must be pushed. The following
+# block MUST remain byte-for-byte identical:
 #
 #   === IMAGE_LIST_BEGIN ===
 #   <image1>
@@ -21,14 +31,7 @@ set -euo pipefail
 #   ...
 #   === IMAGE_LIST_END ===
 #
-# The CI pipeline depends on this exact format.
-# DO NOT REMOVE, RENAME, OR MODIFY THESE MARKERS.
-# ----------------------------------------------------
-#
-# The markers are consumed by:
-#   sed -n '/IMAGE_LIST_BEGIN/,/IMAGE_LIST_END/p'
-#
-# Any change will break CI image publishing.
+# DO NOT MODIFY THESE MARKERS.
 # ====================================================
 
 CONFIG_FILE="./build_config.yaml"
@@ -36,10 +39,12 @@ DOCKERFILE="./Dockerfile"
 TTYD_DOCKERFILE="./Dockerfile.ttyd"
 COMMIT_HASH="$(git rev-parse --short HEAD)"
 
-BUILT_IMAGES=()   # Collected for machine-readable CI output
+# Array collecting all built image tags for CI output
+BUILT_IMAGES=()
 
 # ----------------------------------------------------
 # Dependency check
+# Ensures required tools exist before continuing.
 # ----------------------------------------------------
 check_deps() {
     for dep in docker yq; do
@@ -52,6 +57,7 @@ check_deps() {
 
 # ----------------------------------------------------
 # Helper: read a field from a variant in build_config.yaml
+# This isolates YAML parsing and avoids duplication.
 # ----------------------------------------------------
 get_variant_field() {
     local variant="$1"
@@ -61,6 +67,14 @@ get_variant_field() {
 
 # ----------------------------------------------------
 # Build a single image (standard or ttyd)
+#
+# Steps:
+#   1. Create a temporary Dockerfile with injected
+#      variant-specific commands.
+#   2. Build the image with docker build.
+#   3. Append the resulting tag to BUILT_IMAGES.
+#
+# AWK is used for safe multiline template injection.
 # ----------------------------------------------------
 build_variant() {
     local variant="$1"
@@ -70,8 +84,7 @@ build_variant() {
 
     local temp="/tmp/Dockerfile.${variant}.$$"
 
-    # Inject variant commands into Dockerfile template.
-    # AWK is used because it safely handles multiline blocks.
+    # Inject variant commands into the Dockerfile template
     awk -v block="$command" '
         /{{ template for variant goes here }}/ {
             print block
@@ -89,21 +102,32 @@ build_variant() {
 }
 
 # ----------------------------------------------------
-# Main
+# Main entry point
+#
+# Arguments:
+#   $1 = variant name (required)
+#   $2 = registry prefix (optional)
+#
+# Behavior:
+#   - Validates variant exists in YAML.
+#   - Builds standard + ttyd images.
+#   - Emits CI machine-readable image list.
 # ----------------------------------------------------
 main() {
     check_deps
 
     if [ -z "${1:-}" ]; then
-        echo "Usage: $0 <variant>" >&2
+        echo "Usage: $0 <variant> [registry]" >&2
         exit 1
     fi
 
     VARIANT="$1"
+    REGISTRY="${2:-}"
 
     COMMAND=$(get_variant_field "$VARIANT" "command")
     TAG=$(get_variant_field "$VARIANT" "tag")
 
+    # Validate variant definition
     if [ -z "$COMMAND" ] || [ -z "$TAG" ] || [ "$COMMAND" = "null" ] || [ "$TAG" = "null" ]; then
         echo "ERROR: Variant '$VARIANT' not found in $CONFIG_FILE" >&2
         exit 1
@@ -113,22 +137,26 @@ main() {
     echo "Command: $COMMAND"
     echo "Tag: $TAG"
 
-    # Build standard image
-    STD_TAG="container-my-pi-${TAG}:${COMMIT_HASH}"
-    build_variant "$VARIANT" "$DOCKERFILE" "$STD_TAG" "$COMMAND"
+    # Optional registry prefix
+    if [ -n "$REGISTRY" ]; then
+        PREFIX="${REGISTRY}/"
+    else
+        PREFIX=""
+    fi
 
-    # Build ttyd image
-    TTYD_TAG="container-my-pi-${TAG}-ttyd:${COMMIT_HASH}"
+    # Construct deterministic tags
+    STD_TAG="${PREFIX}container-my-pi-${TAG}:${COMMIT_HASH}"
+    TTYD_TAG="${PREFIX}container-my-pi-${TAG}-ttyd:${COMMIT_HASH}"
+
+    # Build both images
+    build_variant "$VARIANT" "$DOCKERFILE" "$STD_TAG" "$COMMAND"
     build_variant "$VARIANT" "$TTYD_DOCKERFILE" "$TTYD_TAG" "$COMMAND"
 
     echo "=== Build complete for $VARIANT ==="
 
     # ------------------------------------------------
     # CI-CRITICAL MACHINE-READABLE OUTPUT
-    # ------------------------------------------------
     # DO NOT MODIFY THIS FORMAT.
-    # GitHub Actions extracts this block to determine
-    # which images must be pushed to GHCR.
     # ------------------------------------------------
     echo "=== IMAGE_LIST_BEGIN ==="
     for img in "${BUILT_IMAGES[@]}"; do
