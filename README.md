@@ -40,7 +40,7 @@ The process follows this path:
 
 The standard image naming format is:
 ```
-oh-my-pi-<variant-name>:<tag>
+container-my-pi-<variant-name>:<tag>
 ```
 
 ## ⚙️ Configuration and Variants

@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# Least privilege: only the permissions required by the workflow
 permissions:
   contents: read
   packages: write
@@ -18,7 +17,7 @@ concurrency:
 env:
   YQ_VERSION: v4.45.1
   DEFAULT_REGISTRY: ghcr.io
-  IMAGE_REPO_PREFIX: ${{ github.repository }}   # used for tagging non-qualified images
+  IMAGE_REPO_PREFIX: ${{ github.repository }}
 
 jobs:
 
@@ -50,14 +49,17 @@ jobs:
         id: set-matrix
         run: |
           set -euo pipefail
+
           VARIANTS=$(yq eval -o=json -I=0 '[.variants[].name]' build_config.yaml) || {
             echo "Failed to parse build_config.yaml" >&2
             exit 1
           }
+
           if [ "$(printf '%s' "$VARIANTS" | yq eval 'length' -)" -eq 0 ]; then
             echo "No variants found in build_config.yaml" >&2
             exit 1
           fi
+
           echo "matrix=$VARIANTS" >> "$GITHUB_OUTPUT"
 
   build-and-push:
@@ -102,19 +104,24 @@ jobs:
           path: |
             ~/.cache/docker
             ~/.buildx-cache
-          key: buildx-cache-${{ runner.os }}-${{ github.sha }}
+          key: buildx-cache-${{ runner.os }}-${{ github.ref_name || github.head_ref }}-${{ matrix.variant }}-${{ hashFiles('**/Dockerfile','**/build.sh','build_config.yaml') }}
           restore-keys: |
+            buildx-cache-${{ runner.os }}-${{ github.ref_name || github.head_ref }}-${{ matrix.variant }}-
+            buildx-cache-${{ runner.os }}-${{ github.ref_name || github.head_ref }}-
             buildx-cache-${{ runner.os }}-
 
       - name: Run build.sh and capture image list
         id: build
         run: |
           set -euo pipefail
+
           echo "Running build.sh for variant: ${{ matrix.variant }}"
 
           # Capture full output (stdout+stderr)
-          OUTPUT=$(./build.sh "${{ matrix.variant }}" "${{ env.DEFAULT_REGISTRY }}/whitebahamut/oh-my-pi" 2>&1) || {
+          OUTPUT=$(./build.sh "${{ matrix.variant }}" "${{ env.DEFAULT_REGISTRY }}/whitebahamut/container-my-pi" 2>&1) || {
             echo "$OUTPUT"
+            # Save output for artifact upload and fail
+            printf '%s\n' "$OUTPUT" > build-output.log || true
             exit 1
           }
 
@@ -130,17 +137,14 @@ jobs:
 
           if [ -z "$IMAGES_JSON" ]; then
             echo "No images emitted by build.sh for variant ${{ matrix.variant }}" >&2
-            # Upload full build output for debugging
-            printf '%s\n' "$OUTPUT" > build-output.log
-            gh release create "ci-failure-${{ github.run_id }}-${{ matrix.variant }}" build-output.log --prerelease || true
+            printf '%s\n' "$OUTPUT" > build-output.log || true
             exit 1
           fi
 
           # Validate JSON array using yq
           JSON=$(printf '%s' "$IMAGES_JSON" | yq eval -o=json -I=0 '.' -) || {
             echo "Image list is not valid JSON: $IMAGES_JSON" >&2
-            printf '%s\n' "$OUTPUT" > build-output.log
-            gh release create "ci-failure-${{ github.run_id }}-${{ matrix.variant }}" build-output.log --prerelease || true
+            printf '%s\n' "$OUTPUT" > build-output.log || true
             exit 1
           }
 
@@ -159,7 +163,6 @@ jobs:
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           DEFAULT_REGISTRY: ${{ env.DEFAULT_REGISTRY }}
-          IMAGE_REPO_PREFIX: ${{ env.IMAGE_REPO_PREFIX }}
         run: |
           set -euo pipefail
 
@@ -187,4 +190,3 @@ jobs:
           name: build-logs-${{ matrix.variant }}
           path: |
             build-output.log
-            # include any other logs your build.sh may have produced
