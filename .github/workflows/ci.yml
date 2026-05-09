@@ -1,43 +1,21 @@
 name: CI/CD Pipeline
 
-# ------------------------------------------------------------
-# TRIGGERS
-# ------------------------------------------------------------
-# Run CI on:
-#   - pushes to main or develop
-#   - pull requests targeting main
-# Ensures all variants are validated before merge.
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
-# ------------------------------------------------------------
-# PERMISSIONS
-# ------------------------------------------------------------
-# packages: write → required to push images to GHCR
-# contents: read → required for checkout
 permissions:
   contents: read
   packages: write
 
-# ------------------------------------------------------------
-# CONCURRENCY CONTROL
-# ------------------------------------------------------------
-# Ensures only one workflow per branch runs at a time.
-# If a new push arrives, the previous run is cancelled.
 concurrency:
   group: ci-cd-pipeline-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
 
-  # ============================================================
-  # JOB 1 — PREPARE MATRIX
-  # ============================================================
-  # Reads build_config.yaml and extracts the list of variants.
-  # Produces a compact JSON array used as the matrix for builds.
   prepare:
     name: Prepare matrix
     runs-on: ubuntu-latest
@@ -49,44 +27,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      # Install jq + yq for YAML/JSON processing
-      - name: Install yq and jq
+      - name: Install mikefarah yq
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y jq
-          pip3 install yq
+          YQ_VERSION=v4.45.1
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
 
-      # --------------------------------------------------------
-      # Extract variant list from build_config.yaml
-      # Output MUST be compact JSON for GitHub Actions
-      # --------------------------------------------------------
       - name: Extract variant list
         id: set-matrix
         run: |
           set -euo pipefail
 
-          # Extract variant names as compact JSON array
-          VARIANTS=$(yq -r '.variants[].name' build_config.yaml \
-            | jq -R . \
-            | jq -s -c .)
+          # Produce a compact JSON array of variant names using yq only
+          VARIANTS=$(yq eval -o=json -I=0 '[.variants[].name]' build_config.yaml)
 
           # Validate non-empty
-          if [ "$(printf '%s' "$VARIANTS" | jq length)" -eq 0 ]; then
+          if [ "$(printf '%s' "$VARIANTS" | yq eval 'length' -)" -eq 0 ]; then
             echo "No variants found in build_config.yaml" >&2
             exit 1
           fi
 
-          # Emit compact JSON array to GitHub output
+          # Emit compact JSON array to GitHub Actions output
           echo "matrix=$VARIANTS" >> "$GITHUB_OUTPUT"
 
-  # ============================================================
-  # JOB 2 — BUILD AND PUSH IMAGES
-  # ============================================================
-  # Builds each variant in parallel using the matrix produced
-  # by the prepare job. The authoritative build.sh script is
-  # executed, and its IMAGE_LIST_BEGIN/END block is parsed to
-  # determine which images must be pushed.
   build-and-push:
     name: Build and push images
     needs: prepare
@@ -95,29 +61,27 @@ jobs:
     strategy:
       matrix:
         variant: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: 4   # Avoids overloading the runner
+      max-parallel: 4
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install jq + yq again (each job runs in a fresh VM)
-      - name: Install jq and yq
+      - name: Install mikefarah yq
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y jq
-          pip3 install yq
+          YQ_VERSION=v4.45.1
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
 
-      # Latest QEMU action (v4)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
-      # Latest Buildx action (v4)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Latest login-action (v4)
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -125,10 +89,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --------------------------------------------------------
-      # Run build.sh for the current variant.
-      # build.sh MUST emit IMAGE_LIST_BEGIN/END markers.
-      # --------------------------------------------------------
       - name: Run build.sh and capture image list
         id: build
         run: |
@@ -136,8 +96,8 @@ jobs:
 
           echo "Running build.sh for variant: ${{ matrix.variant }}"
 
-          # Run authoritative build script
-          OUTPUT=$(./build.sh "${{ matrix.variant }}" "ghcr.io/whitebahamut" 2>&1) || {
+          # Run authoritative build script and capture stdout/stderr
+          OUTPUT=$(./build.sh "${{ matrix.variant }}" "ghcr.io/whitebahamut/oh-my-pi" 2>&1) || {
             echo "$OUTPUT"
             exit 1
           }
@@ -149,35 +109,35 @@ jobs:
             | sed -n '/IMAGE_LIST_BEGIN/,/IMAGE_LIST_END/p' \
             | sed '1d;$d' || true)
 
-          # Fail if no images were emitted
+          # Fail if no images were emitted (trim whitespace)
           if [ -z "$(printf '%s' "$IMAGES" | tr -d '[:space:]')" ]; then
             echo "No images emitted by build.sh for variant ${{ matrix.variant }}" >&2
             exit 1
           fi
 
-          # Convert to compact JSON array for step output
-          JSON=$(printf '%s\n' "$IMAGES" | jq -R . | jq -s -c .)
+          # Convert newline-separated list to compact JSON array using yq only
+          JSON=$(printf '%s\n' "$IMAGES" | yq eval -o=json -I=0 'split("\n") | map(select(. != ""))' -)
+
           echo "images=$JSON" >> "$GITHUB_OUTPUT"
 
-      # --------------------------------------------------------
-      # Push all built images to GHCR
-      # --------------------------------------------------------
       - name: Push images to GHCR
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          echo "${{ steps.build.outputs.images }}" \
-            | jq -r '.[]' \
+          # Iterate over the JSON array using yq only
+          printf '%s' "${{ steps.build.outputs.images }}" \
+            | yq eval '.[]' - \
             | while read -r IMG; do
 
-              # Fully qualified image (contains registry)
+              # Trim possible surrounding quotes (yq prints scalars cleanly in most cases)
+              IMG=$(printf '%s' "$IMG" | sed -E 's/^"(.*)"$/\1/')
+
               if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
                 echo "Pushing fully qualified image: $IMG"
                 docker push "$IMG"
               else
-                # Tag under GHCR if not fully qualified
                 TARGET="ghcr.io/${GITHUB_REPOSITORY}/${IMG}"
                 echo "Tagging $IMG -> $TARGET"
                 docker tag "$IMG" "$TARGET"
@@ -185,17 +145,16 @@ jobs:
               fi
             done
 
-      # --------------------------------------------------------
-      # OPTIONAL: Verify manifests exist for pushed images
-      # --------------------------------------------------------
       - name: Verify manifests (non-blocking)
         if: always()
         run: |
           set -euo pipefail
 
-          echo "${{ steps.build.outputs.images }}" \
-            | jq -r '.[]' \
+          printf '%s' "${{ steps.build.outputs.images }}" \
+            | yq eval '.[]' - \
             | while read -r IMG; do
+
+              IMG=$(printf '%s' "$IMG" | sed -E 's/^"(.*)"$/\1/')
 
               if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
                 TARGET="$IMG"
