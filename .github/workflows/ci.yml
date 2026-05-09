@@ -6,6 +6,7 @@ on:
   pull_request:
     branches: [ main ]
 
+# Least privilege: only the permissions required by the workflow
 permissions:
   contents: read
   packages: write
@@ -14,66 +15,77 @@ concurrency:
   group: ci-cd-pipeline-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  YQ_VERSION: v4.45.1
+  DEFAULT_REGISTRY: ghcr.io
+  IMAGE_REPO_PREFIX: ${{ github.repository }}   # used for tagging non-qualified images
+
 jobs:
 
   prepare:
     name: Prepare matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install mikefarah yq
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          YQ_VERSION=v4.45.1
-          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+          if ! command -v yq >/dev/null 2>&1 || [ "$(yq --version 2>/dev/null || true)" != "${YQ_VERSION}" ]; then
+            sudo apt-get update -y
+            sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
           yq --version
 
       - name: Extract variant list
         id: set-matrix
         run: |
           set -euo pipefail
-
-          # Produce a compact JSON array of variant names using yq only
-          VARIANTS=$(yq eval -o=json -I=0 '[.variants[].name]' build_config.yaml)
-
-          # Validate non-empty
+          VARIANTS=$(yq eval -o=json -I=0 '[.variants[].name]' build_config.yaml) || {
+            echo "Failed to parse build_config.yaml" >&2
+            exit 1
+          }
           if [ "$(printf '%s' "$VARIANTS" | yq eval 'length' -)" -eq 0 ]; then
             echo "No variants found in build_config.yaml" >&2
             exit 1
           fi
-
-          # Emit compact JSON array to GitHub Actions output
           echo "matrix=$VARIANTS" >> "$GITHUB_OUTPUT"
 
   build-and-push:
     name: Build and push images
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     strategy:
       matrix:
         variant: ${{ fromJson(needs.prepare.outputs.matrix) }}
       max-parallel: 4
+      fail-fast: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install mikefarah yq
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          YQ_VERSION=v4.45.1
-          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+          if ! command -v yq >/dev/null 2>&1 || [ "$(yq --version 2>/dev/null || true)" != "${YQ_VERSION}" ]; then
+            sudo apt-get update -y
+            sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
           yq --version
 
       - name: Set up QEMU
@@ -81,92 +93,98 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          install: true
+
+      - name: Configure buildx cache (local)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/docker
+            ~/.buildx-cache
+          key: buildx-cache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            buildx-cache-${{ runner.os }}-
 
       - name: Run build.sh and capture image list
         id: build
         run: |
           set -euo pipefail
-
           echo "Running build.sh for variant: ${{ matrix.variant }}"
 
-          # Run authoritative build script and capture stdout/stderr
-          OUTPUT=$(./build.sh "${{ matrix.variant }}" "ghcr.io/whitebahamut/oh-my-pi" 2>&1) || {
+          # Capture full output (stdout+stderr)
+          OUTPUT=$(./build.sh "${{ matrix.variant }}" "${{ env.DEFAULT_REGISTRY }}/whitebahamut/oh-my-pi" 2>&1) || {
             echo "$OUTPUT"
             exit 1
           }
 
           echo "$OUTPUT"
 
-          # Extract lines between IMAGE_LIST_BEGIN and IMAGE_LIST_END
-          IMAGES=$(printf '%s\n' "$OUTPUT" \
+          # Extract the JSON array between the markers (first occurrence)
+          IMAGES_JSON=$(printf '%s\n' "$OUTPUT" \
             | sed -n '/IMAGE_LIST_BEGIN/,/IMAGE_LIST_END/p' \
-            | sed '1d;$d' || true)
+            | sed '1d;$d' \
+            | sed -n '1p' || true)
 
-          # Fail if no images were emitted (trim whitespace)
-          if [ -z "$(printf '%s' "$IMAGES" | tr -d '[:space:]')" ]; then
+          IMAGES_JSON=$(printf '%s' "$IMAGES_JSON" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+          if [ -z "$IMAGES_JSON" ]; then
             echo "No images emitted by build.sh for variant ${{ matrix.variant }}" >&2
+            # Upload full build output for debugging
+            printf '%s\n' "$OUTPUT" > build-output.log
+            gh release create "ci-failure-${{ github.run_id }}-${{ matrix.variant }}" build-output.log --prerelease || true
             exit 1
           fi
 
-          # Convert newline-separated list to compact JSON array using yq only
-          JSON=$(printf '%s\n' "$IMAGES" | yq eval -o=json -I=0 'split("\n") | map(select(. != ""))' -)
+          # Validate JSON array using yq
+          JSON=$(printf '%s' "$IMAGES_JSON" | yq eval -o=json -I=0 '.' -) || {
+            echo "Image list is not valid JSON: $IMAGES_JSON" >&2
+            printf '%s\n' "$OUTPUT" > build-output.log
+            gh release create "ci-failure-${{ github.run_id }}-${{ matrix.variant }}" build-output.log --prerelease || true
+            exit 1
+          }
 
           echo "images=$JSON" >> "$GITHUB_OUTPUT"
 
-      - name: Push images to GHCR
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.DEFAULT_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push images to registry
+        if: github.event_name == 'push'
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
+          DEFAULT_REGISTRY: ${{ env.DEFAULT_REGISTRY }}
+          IMAGE_REPO_PREFIX: ${{ env.IMAGE_REPO_PREFIX }}
         run: |
           set -euo pipefail
 
-          # Iterate over the JSON array using yq only
           printf '%s' "${{ steps.build.outputs.images }}" \
             | yq eval '.[]' - \
             | while read -r IMG; do
 
-              # Trim possible surrounding quotes (yq prints scalars cleanly in most cases)
               IMG=$(printf '%s' "$IMG" | sed -E 's/^"(.*)"$/\1/')
 
               if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
                 echo "Pushing fully qualified image: $IMG"
                 docker push "$IMG"
               else
-                TARGET="ghcr.io/${GITHUB_REPOSITORY}/${IMG}"
+                TARGET="${DEFAULT_REGISTRY}/${GITHUB_REPOSITORY}/${IMG}"
                 echo "Tagging $IMG -> $TARGET"
                 docker tag "$IMG" "$TARGET"
                 docker push "$TARGET"
               fi
             done
 
-      - name: Verify manifests (non-blocking)
-        if: always()
-        run: |
-          set -euo pipefail
-
-          printf '%s' "${{ steps.build.outputs.images }}" \
-            | yq eval '.[]' - \
-            | while read -r IMG; do
-
-              IMG=$(printf '%s' "$IMG" | sed -E 's/^"(.*)"$/\1/')
-
-              if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
-                TARGET="$IMG"
-              else
-                TARGET="ghcr.io/${{ github.repository }}/$IMG"
-              fi
-
-              echo "Inspecting manifest for $TARGET"
-
-              if docker manifest inspect "$TARGET" > /dev/null 2>&1; then
-                echo "Manifest exists for $TARGET"
-              else
-                echo "Warning: manifest not found for $TARGET" >&2
-              fi
-            done
+      - name: Upload build output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.variant }}
+          path: |
+            build-output.log
+            # include any other logs your build.sh may have produced

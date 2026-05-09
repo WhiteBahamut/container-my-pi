@@ -198,15 +198,15 @@ main() {
 
   echo "=== Build complete for $VARIANT ==="
 
-  # ------------------------------------------------
-  # CI-CRITICAL MACHINE-READABLE OUTPUT
-  # DO NOT MODIFY THIS FORMAT.
-  # ------------------------------------------------
-  echo "=== IMAGE_LIST_BEGIN ==="
-  for img in "${BUILT_IMAGES[@]}"; do
-    echo "$img"
-  done
-  echo "=== IMAGE_LIST_END ==="
+# ------------------------------------------------
+# CI-CRITICAL MACHINE-READABLE OUTPUT
+# DO NOT MODIFY THIS FORMAT.
+# ------------------------------------------------
+echo "=== IMAGE_LIST_BEGIN ==="
+# Print BUILT_IMAGES as a compact JSON array
+# Uses jq (already a script dependency)
+printf '%s\n' "${BUILT_IMAGES[@]}" | jq -R -s -c 'split("\n")[:-1]'
+echo "=== IMAGE_LIST_END ==="
 }
 
 main "$@"
