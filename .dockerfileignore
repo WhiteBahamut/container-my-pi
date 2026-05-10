@@ -1,3 +1,5 @@
 .github/
+.omp/
+build_config.yaml
 README.md
 build.sh
