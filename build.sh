@@ -87,8 +87,9 @@ get_variant_field() {
 # ----------------------------------------------------
 get_variant_steps_json() {
   local variant="$1"
+  local fieldName="$2"
   # returns JSON array (possibly empty)
-  yq -o=json ".variants[] | select(.name == \"${variant}\") | .steps // []" "$CONFIG_FILE"
+  yq -o=json ".variants[] | select(.name == \"${variant}\") | .${fieldName} // []" "$CONFIG_FILE"
 }
 
 # ----------------------------------------------------
@@ -126,10 +127,17 @@ build_variant() {
   local dockerfile_template="$2"
   local tag="$3"
   local steps_json="$4"
+  local tests_json="$5"
   local temp="/tmp/Dockerfile.${variant}.$$"
 
   # Generate injected block (verbatim RUN <step content> per steps item)
-  injected_block="$(printf '%s' "$steps_json" | steps_json_to_run_block)"
+  injected_block="$(
+    {
+      printf '%s' "$steps_json" | steps_json_to_run_block
+      printf '\n'
+      printf '%s' "$tests_json" | steps_json_to_run_block
+    }
+  )"
 
   # Inject into template at the placeholder line
   awk -v block="$injected_block" '
@@ -165,7 +173,8 @@ main() {
   # Use variant name as tag (no separate tag field)
   TAG="${VARIANT}"
 
-  STEPS_JSON="$(get_variant_steps_json "$VARIANT")"
+  STEPS_JSON="$(get_variant_steps_json "$VARIANT" steps)"
+  TESTS_JSON="$(get_variant_steps_json "$VARIANT" tests)"
 
   if [ -z "$STEPS_JSON" ] || [ "$STEPS_JSON" = "null" ]; then
     echo "ERROR: Variant '$VARIANT' not found or missing steps in $CONFIG_FILE" >&2
@@ -191,8 +200,8 @@ main() {
   cp "$DOCKERFILE" "$tmp_std_template"
   cp "$TTYD_DOCKERFILE" "$tmp_ttyd_template"
 
-  build_variant "$VARIANT" "$tmp_std_template" "$STD_TAG" "$STEPS_JSON"
-  build_variant "$VARIANT" "$tmp_ttyd_template" "$TTYD_TAG" "$STEPS_JSON"
+  build_variant "$VARIANT" "$tmp_std_template" "$STD_TAG" "$STEPS_JSON" "$TESTS_JSON"
+  build_variant "$VARIANT" "$tmp_ttyd_template" "$TTYD_TAG" "$STEPS_JSON" "$TESTS_JSON"
 
   rm -f "$tmp_std_template" "$tmp_ttyd_template"
 

@@ -19,9 +19,8 @@ Our design focuses on reliability and security:
 *   **Flexibility**: Supports easy addition of variants for specialized toolchains (`kubectl`, `dotnet`, etc.).
 
 ### Architecture Flow
-The process follows this path:
-`build_config.yaml` (variants) $\rightarrow$ `build.sh` (orchestration) $\rightarrow$ `Dockerfile` (multi-stage) $\rightarrow$ Image artifacts
-
+The build process follows a deterministic path:
+build_config.yaml (defines variants and steps) $\rightarrow$ build.sh (orchestration, converts steps and tests to RUN commands) $\rightarrow$ Dockerfile (multi-stage image generation) $\rightarrow$ Image artifacts
 ## 🚀 Quickstart
 
 ### Prerequisites
@@ -83,6 +82,7 @@ The file is a YAML list of variant objects. Each object must include:
 *   **`tag`**: (string) The image tag to use when building this variant (e.g., `latest`, `k8s`).
 *   **`description`**: (string) A short, human-readable purpose of the variant.
 *   **`steps`**: (list[string]) A list of shell commands or tool identifiers. These steps are executed during the Docker build process to install required dependencies (e.g., `dnf install -y wget`). Multiline yaml is possible.
+*   **`tests`**: (list[string]) A list of shell commands to test the image (e.g. simple `curl --version`). These steps are executed during the Docker build process _after_ the steps have been executed. Multiline yaml is possible.
 
 **Usage:**
 

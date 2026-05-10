@@ -1,9 +1,11 @@
 variants:
   - name: standard
+    description: "base line. Just a few simple tools. For example used to work on this repo."
     steps:
       - dnf install -y bash curl jq yq openssl git tar && dnf clean all
-
+    tests: []
   - name: kubectl-tools
+    description: "some simple tools to work with k8s"
     steps:
       - |
         dnf install -y bash curl jq yq openssl git tar && \
@@ -13,7 +15,12 @@ variants:
         chmod +x kubectl && \
         mkdir -p /usr/local/bin && \
         mv ./kubectl /usr/local/bin/kubectl
-
+      - dnf install -y helm
+    tests:
+      - kubectl --help && helm version
   - name: dotnet-dev
+    description: "for dotnet development"
     steps:
       - dnf install -y bash curl jq yq openssl git tar dotnet-sdk-10.0 && dnf clean all
+    tests:
+      - dotnet --version
