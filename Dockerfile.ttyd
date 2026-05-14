@@ -1,6 +1,8 @@
 # ====================================================
 # BUILD STAGE: Install dependencies and compile agents
 # ====================================================
+ARG OMP_VERSION
+
 FROM fedora:44 AS builder
 
 # Install necessary system dependencies
@@ -10,7 +12,6 @@ RUN dnf install -y \
     openssl \
     tar \
     unzip \
-    ttyd \
     && dnf clean all
 
 # Create non-root user pi
@@ -27,7 +28,7 @@ ENV BUN_INSTALL="/home/pi/.bun"
 
 # Install oh-my-pi globally
 WORKDIR /workspace
-RUN bun install -g @oh-my-pi/pi-coding-agent
+RUN bun install -g @oh-my-pi/pi-coding-agent@${OMP_VERSION}
 
 # ====================================================
 # RUNTIME STAGE: Minimal environment for execution
@@ -37,6 +38,7 @@ FROM fedora-minimal:44 AS runtime
 # Recreate minimal environment and user
 RUN useradd -m -s /bin/bash pi
 RUN mkdir -p /workspace && chown pi /workspace
+RUN dnf install -y ttyd && dnf clean all
 
 {{ template for variant goes here }}
 # Runtime base stage: Minimal environment, inheriting from builder.
@@ -53,4 +55,4 @@ WORKDIR /workspace
 EXPOSE 7681
 
 # Launch ttyd running OMP
-CMD ["ttyd", "-p", "7681", "bash", "-lc", "omp"]
+CMD ["ttyd", "-p", "7681", "-W", "bash", "-lc", "omp"]

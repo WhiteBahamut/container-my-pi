@@ -149,7 +149,14 @@ build_variant() {
   ' "$dockerfile_template" > "$temp"
 
   echo "-> Building: $tag"
-  docker build --pull -t "$tag" -f "$temp" .
+
+  if command -v podman; then
+    envArgs="--build-arg-file .image.env"
+  else
+    envArgs="--env-file .image.env"
+  fi
+
+  docker build $envArgs --pull -t "$tag" -f "$temp" .
 
   BUILT_IMAGES+=("$tag")
 

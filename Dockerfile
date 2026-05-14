@@ -1,6 +1,8 @@
 # ====================================================
 # BUILD STAGE: Install dependencies and compile agents
 # ====================================================
+ARG OMP_VERSION
+
 FROM fedora:44 AS builder
 
 # Install necessary system dependencies
@@ -26,7 +28,7 @@ ENV BUN_INSTALL="/home/pi/.bun"
 
 # Install oh-my-pi globally
 WORKDIR /workspace
-RUN bun install -g @oh-my-pi/pi-coding-agent
+RUN bun install -g @oh-my-pi/pi-coding-agent@${OMP_VERSION}
 
 # ====================================================
 # RUNTIME STAGE: Minimal environment for execution
