@@ -33,7 +33,7 @@ RUN bun install -g @oh-my-pi/pi-coding-agent@${OMP_VERSION}
 # ====================================================
 # RUNTIME STAGE: Minimal environment for execution
 # ====================================================
-FROM fedora-minimal:44 AS runtime
+FROM registry.fedoraproject.org/fedora-minimal:44 AS runtime
 
 # Recreate minimal environment and user
 RUN useradd -m -s /bin/bash pi
