@@ -152,11 +152,13 @@ build_variant() {
 
   if command -v podman; then
     envArgs="--build-arg-file .image.env"
+    engine=podman
   else
     envArgs="--env-file .image.env"
+    engine=docker
   fi
 
-  docker build $envArgs --pull -t "$tag" -f "$temp" .
+  $engine build $envArgs --pull -t "$tag" -f "$temp" .
 
   BUILT_IMAGES+=("$tag")
 
