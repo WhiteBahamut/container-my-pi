@@ -21,6 +21,13 @@ variants:
   - name: dotnet-dev
     description: "for dotnet development"
     steps:
-      - dnf install -y bash curl jq yq openssl git tar dotnet-sdk-10.0 && dnf clean all
+      - dnf install -y bash curl jq yq openssl git tar gzip dotnet-sdk-10.0 && dnf clean all
+      - |
+        curl -L -o /tmp/omnisharp-linux-x64.tar.gz  https://github.com/OmniSharp/omnisharp-roslyn/releases/download/v1.39.15/omnisharp-linux-x64-net6.0.tar.gz  && \
+        mkdir /home/pi/.omnisharp && \
+        tar -xzf /tmp/omnisharp-linux-x64.tar.gz   -C /home/pi/.omnisharp  && \
+        ln -s /home/pi/.omnisharp/OmniSharp /usr/local/bin/omnisharp && \
+        chmod +x /usr/local/bin/omnisharp && \
+        rm -rf /tmp/omnisharp-linux-x64.tar.gz  
     tests:
       - dotnet --version
