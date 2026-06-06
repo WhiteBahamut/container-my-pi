@@ -9,7 +9,7 @@ variants:
     description: "some simple tools to work with k8s"
     steps:
       - |
-        dnf install -y bash curl jq yq openssl git tar && \
+        dnf install -y bash curl jq yq openssl git tar npm && \
         dnf clean all
       - |
         curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
@@ -23,7 +23,7 @@ variants:
   - name: dotnet-dev
     description: "for dotnet development"
     steps:
-      - dnf install -y bash curl jq yq openssl git tar gzip dotnet-sdk-10.0 && dnf clean all
+      - dnf install -y bash curl jq yq openssl git tar gzip dotnet-sdk-10.0 npm && dnf clean all
       - |
         curl -L -o /tmp/omnisharp-linux-x64.tar.gz  https://github.com/OmniSharp/omnisharp-roslyn/releases/download/v1.39.15/omnisharp-linux-x64-net6.0.tar.gz  && \
         mkdir /home/pi/.omnisharp && \
