@@ -207,10 +207,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.3
 
+      - name: Compute short SHA
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD 2>/dev/null)" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3.0.0
         with:
-          name: ${{ github.sha[0:8] }}
-          tag_name: ${{ github.sha[0:8] }}
+          name: ${{ steps.vars.outputs.short_sha }}
+          tag_name: ${{ steps.vars.outputs.short_sha }}
           prerelease: false
           generate_release_notes: true
