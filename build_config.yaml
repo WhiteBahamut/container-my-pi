@@ -2,7 +2,8 @@ variants:
   - name: standard
     description: "base line. Just a few simple tools. For example used to work on this repo."
     steps:
-      - dnf install -y bash curl jq yq openssl git tar && dnf clean all
+      - dnf install -y bash curl jq yq openssl git tar npm && dnf clean all
+      - npm install -g yaml-language-server unified-language-server vscode-langservers-extracted
     tests: []
   - name: kubectl-tools
     description: "some simple tools to work with k8s"
@@ -16,6 +17,7 @@ variants:
         mkdir -p /usr/local/bin && \
         mv ./kubectl /usr/local/bin/kubectl
       - dnf install -y helm
+      - npm install -g yaml-language-server unified-language-server vscode-langservers-extracted
     tests:
       - kubectl --help && helm version
   - name: dotnet-dev
@@ -28,6 +30,7 @@ variants:
         tar -xzf /tmp/omnisharp-linux-x64.tar.gz   -C /home/pi/.omnisharp  && \
         ln -s /home/pi/.omnisharp/OmniSharp /usr/local/bin/omnisharp && \
         chmod +x /usr/local/bin/omnisharp && \
-        rm -rf /tmp/omnisharp-linux-x64.tar.gz  
+        rm -rf /tmp/omnisharp-linux-x64.tar.gz
+      - npm install -g yaml-language-server unified-language-server vscode-langservers-extracted  
     tests:
       - dotnet --version
