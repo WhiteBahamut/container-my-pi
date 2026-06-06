@@ -210,7 +210,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v3.0.0
         with:
-          name: ${{ github.sha }}
-          tag_name: ${{ github.sha }}
+          name: ${{ github.sha[0:8] }}
+          tag_name: ${{ github.sha[0:8] }}
           prerelease: false
           generate_release_notes: true
