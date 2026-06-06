@@ -196,3 +196,21 @@ jobs:
           name: build-logs-${{ matrix.variant }}
           path: |
             build-output.log
+
+  release:
+    name: Create Release
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.sha }}
+          tag_name: ${{ github.sha }}
+          prerelease: false
+          generate_release_notes: true
