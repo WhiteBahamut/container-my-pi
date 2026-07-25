@@ -34,3 +34,10 @@ variants:
       - npm install -g yaml-language-server unified-language-server vscode-langservers-extracted  
     tests:
       - dotnet --version
+  - name: rust-dev
+    description: "for rust development"
+    steps:
+      - dnf install -y bash curl jq yq openssl git tar gzip rustc cargo npm && dnf clean all
+      - npm install -g yaml-language-server unified-language-server vscode-langservers-extracted  
+    tests:
+      - rustc --version
