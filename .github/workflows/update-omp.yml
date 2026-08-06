@@ -1,0 +1,43 @@
+name: Update OMP Version
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main          # <— ensures we always operate on main
+
+      - name: Fetch latest OMP release
+        id: fetch
+        run: |
+          API="https://api.github.com/repos/can1357/oh-my-pi/releases/latest"
+          LATEST=$(curl -s $API | jq -r '.tag_name')
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+
+      - name: Read current version
+        id: current
+        run: |
+          CURRENT=$(grep '^OMP_VERSION=' .image.env | cut -d '=' -f2)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+      - name: Update .image.env if needed
+        if: steps.fetch.outputs.latest != steps.current.outputs.current
+        run: |
+          sed -i "s/^OMP_VERSION=.*/OMP_VERSION=${{ steps.fetch.outputs.latest }}/" .image.env
+
+      - name: Commit & push to main
+        if: steps.fetch.outputs.latest != steps.current.outputs.current
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .image.env
+          git commit -m "Update OMP_VERSION to ${{ steps.fetch.outputs.latest }}"
+          git push origin main
