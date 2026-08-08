@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: ci-cd-pipeline-${{ github.ref }}
+  group: ci-cd-pipeline-forceclear
   cancel-in-progress: true
 
 env:
