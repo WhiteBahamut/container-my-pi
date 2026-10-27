@@ -154,7 +154,7 @@ build_variant() {
     envArgs="--build-arg-file .image.env"
     engine=podman
   else
-    envArgs="--env-file .image.env"
+    envArgs="--build-arg-file .image.env"
     engine=docker
   fi
 
