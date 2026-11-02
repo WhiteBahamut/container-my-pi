@@ -233,4 +233,4 @@ jobs:
           name: ${{ steps.vars.outputs.short_sha }}
           tag_name: ${{ steps.vars.outputs.short_sha }}
           prerelease: false
-          generate
+          generate_release_notes: true
